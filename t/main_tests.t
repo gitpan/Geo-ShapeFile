@@ -18,12 +18,36 @@ note "Testing Geo::ShapeFile version $Geo::ShapeFile::VERSION\n";
 
 use Geo::ShapeFile::TestHelpers;
 
-#test_end_point_slope();
-test_shapepoint();
-test_files();
-test_empty_dbf();
+#  conditional test runs approach from
+#  http://www.modernperlbooks.com/mt/2013/05/running-named-perl-tests-from-prove.html
 
-done_testing();
+exit main( @ARGV );
+
+sub main {
+    my @args  = @_;
+
+    if (@args) {
+        for my $name (@args) {
+            die "No test method test_$name\n"
+                if not my $func = (__PACKAGE__->can( 'test_' . $name ) || __PACKAGE__->can( $name ));
+            $func->();
+        }
+        done_testing;
+        return 0;
+    }
+
+    test_corners();
+    test_shapes_in_area();
+    #test_end_point_slope();
+    test_shapepoint();
+    test_files();
+    test_empty_dbf();
+    
+    done_testing;
+    return 0;
+}
+
+
 
 ###########################################
 
@@ -244,4 +268,96 @@ sub test_empty_dbf {
     my $obj = Geo::ShapeFile->new($empty_dbf);
     my $records = $obj->records;
     is ($records, 0, 'empty dbf file has zero records');
+}
+
+
+sub test_shapes_in_area {
+    my $shp = Geo::ShapeFile->new ("$dir/test_shapes_in_area");
+
+    my @shapes_in_area = $shp->shapes_in_area (1, 1, 11, 11);
+    is_deeply (
+        [1],
+        \@shapes_in_area,
+        'Shape is in area'
+    );
+
+    @shapes_in_area = $shp->shapes_in_area (11, 11, 12, 12);
+    is_deeply (
+        [],
+        \@shapes_in_area,
+        'Shape is not in area'
+    );
+
+    my @bounds;
+
+    @bounds = (1, -1, 9, 11);
+    @shapes_in_area = $shp->shapes_in_area (@bounds);
+    is_deeply (
+        [1],
+        \@shapes_in_area,
+        'edge overlap on the left, right edge outside bounds',
+    );
+
+
+    @bounds = (0, -1, 9, 11);
+    @shapes_in_area = $shp->shapes_in_area (@bounds);
+    is_deeply (
+        [1],
+        \@shapes_in_area,
+        'left and right edges outside the bounds, upper and lower within',
+    );
+
+    ###  Now check with a larger region
+    $shp = Geo::ShapeFile->new("$dir/lakes");
+
+    #  This should get all features
+    @bounds = (-104, 17, -96, 22);
+    @shapes_in_area = $shp->shapes_in_area (@bounds);
+    is_deeply (
+        [1, 2, 3],
+        \@shapes_in_area,
+        'All lake shapes in bounds',
+    );
+    
+    #  just the western two features
+    @bounds = (-104, 17, -100, 22);
+    @shapes_in_area = $shp->shapes_in_area (@bounds);
+    is_deeply (
+        [1, 2],
+        \@shapes_in_area,
+        'Western two lake shapes in bounds',
+    );
+    
+    #  the western two features with a partial overlap
+    @bounds = (-104, 17, -101.7314, 22);
+    @shapes_in_area = $shp->shapes_in_area (@bounds);
+    is_deeply (
+        [1, 2],
+        \@shapes_in_area,
+        'Western two lake shapes in bounds, partial overlap',
+    );
+
+    return;
+}
+
+
+sub test_corners {
+    my $shp = Geo::ShapeFile->new("$dir/lakes");
+
+    my $ul = $shp->upper_left_corner();
+    my $ll = $shp->lower_left_corner();
+    my $ur = $shp->upper_right_corner();
+    my $lr = $shp->lower_right_corner();
+    
+    is ($ul->X, $ll->X,'corners: min x vals');
+    is ($ur->X, $lr->X,'corners: max x vals');
+    is ($ll->Y, $lr->Y,'corners: min y vals');
+    is ($ul->Y, $ur->Y,'corners: max y vals');
+
+    cmp_ok ($ul->X, '<', $ur->X, 'corners: ul is left of ur');
+    cmp_ok ($ll->X, '<', $lr->X, 'corners: ll is left of lr');
+
+    cmp_ok ($ll->Y, '<', $ul->Y, 'corners: ll is below ul');
+    cmp_ok ($lr->Y, '<', $ur->Y, 'corners: lr is below ur');
+
 }
