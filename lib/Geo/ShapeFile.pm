@@ -7,10 +7,12 @@ use IO::File;
 use Geo::ShapeFile::Shape;
 use Config;
 use List::Util qw /min max/;
+use Tree::R;
 
-our $VERSION = '2.54';
 
-my $is_little_endian = unpack 'b', (pack 'S', 1 );
+our $VERSION = '2.55_001';
+
+my $little_endian_sys = unpack 'b', (pack 'S', 1 );
 
 # Preloaded methods go here.
 sub new {
@@ -49,17 +51,17 @@ sub new {
     };
 
     if (-f $self->{filebase} . '.shx') {
-        $self->read_shx_header();
+        $self->_read_shx_header();
         $self->{has_shx} = 1;
     }
 
     if (-f $self->{filebase} . '.shp') {
-        $self->read_shp_header();
+        $self->_read_shp_header();
         $self->{has_shp} = 1;
     }
 
     if (-f $self->{filebase} . '.dbf') {
-        $self->read_dbf_header();
+        $self->_read_dbf_header();
         $self->{has_dbf} = 1;
     }
 
@@ -78,36 +80,113 @@ sub caching {
 }
 
 sub cache {
-    my $self = shift;
-    my $type = shift;
-    my $obj  = shift;
+    my ($self, $type, $obj, $cache) = @_;
 
     return $self->{_change_cache}->{$type}->{$obj}
       if $self->{_change_cache}->{$type} && $self->{_change_cache}->{$type}->{$obj};
 
     return if !$self->caching($type);
 
-    if (@_) {
-        $self->{_object_cache}->{$type}->{$obj} = shift;
+    if ($cache) {
+        $self->{_object_cache}->{$type}->{$obj} = $cache;
     }
     return $self->{_object_cache}->{$type}->{$obj};
 }
 
+#  This will trigger the various caching
+#  so we end up with the file in memory.
+#  Not an issue for most files.
+sub get_all_shapes {
+    my $self = shift;
 
-sub read_shx_header {
-    shift()->read_shx_shp_header('shx', @_);
+    my @shapes;
+
+    foreach my $id (1 .. $self->shapes()) {
+        my $shape = $self->get_shp_record($id);
+        push @shapes, $shape;
+    }
+
+    return wantarray ? @shapes : \@shapes;
 }
 
-sub read_shp_header {
-    shift()->read_shx_shp_header('shp', @_);
+sub get_shapes_sorted {
+    my $self   = shift;
+    my $shapes = shift;
+    my $sub    = shift;
+
+    if (!defined $sub) {
+        $sub = sub {
+            my ($s1, $s2) = @_;
+            return $s1->{shp_record_number} <=> $s2->{shp_record_number};
+        };
+    }
+
+    if (!defined $shapes) {
+        $shapes = $self->get_all_shapes;
+    }
+
+    my @sorted = sort {$sub->($a, $b)} @$shapes;
+
+    return wantarray ? @sorted : \@sorted;
 }
 
-sub read_shx_shp_header {
+sub get_shapes_sorted_spatially {
+    my $self   = shift;
+    my $shapes = shift;
+    my $sub    = shift;
+
+    if (!defined $sub) {
+        $sub = sub {
+            my ($s1, $s2) = @_;
+            return
+                    $s1->x_min <=> $s2->x_min
+                 || $s1->y_min <=> $s2->y_min
+                 || $s1->x_max <=> $s2->x_max
+                 || $s1->y_max <=> $s2->y_max
+                 || $s1->shape_id <=> $s2->shape_id
+                 ;
+        };
+    }
+
+    return $self->get_shapes_sorted ($shapes, $sub);
+}
+
+sub build_spatial_index {
+    my $self = shift;
+
+    my $shapes = $self->get_all_shapes;
+
+    my $rtree = Tree::R->new();
+    foreach my $shape (@$shapes) {
+        my @bbox = ($shape->x_min, $shape->y_min, $shape->x_max, $shape->y_max);
+        $rtree->insert($shape, @bbox);
+    }
+
+    $self->{_spatial_index} = $rtree;
+
+    return $rtree;
+}
+
+sub get_spatial_index {
+    my $self = shift;
+    return $self->{_spatial_index};
+}
+
+
+sub _read_shx_header {
+    shift()->_read_shx_shp_header('shx', @_);
+}
+
+sub _read_shp_header {
+    shift()->_read_shx_shp_header('shp', @_);
+}
+
+sub _read_shx_shp_header {
     my $self  = shift;
     my $which = shift;
     my $doubles;
 
-    $self->{$which . '_header'} = $self->get_bytes($which, 0, 100);
+    $self->{$which . '_header'} = $self->_get_bytes($which, 0, 100);
     (
         $self->{$which . '_file_code'}, $self->{$which . '_file_length'},
         $self->{$which . '_version'},   $self->{$which . '_shape_type'}, $doubles
@@ -119,7 +198,7 @@ sub read_shx_shp_header {
         $self->{$which . '_z_min'}, $self->{$which . '_z_max'},
         $self->{$which . '_m_min'}, $self->{$which . '_m_max'},
     ) = (
-        $is_little_endian
+        $little_endian_sys
             ? (unpack 'd8', $doubles )
             : (reverse unpack 'd8', scalar reverse $doubles)
     );
@@ -146,10 +225,10 @@ sub get_dbf_field_names {
     return wantarray ? @fld_names : \@fld_names;
 }
 
-sub read_dbf_header {
+sub _read_dbf_header {
     my $self = shift;
 
-    $self->{dbf_header} = $self->get_bytes('dbf', 0, 12);
+    $self->{dbf_header} = $self->_get_bytes('dbf', 0, 12);
     (
         $self->{dbf_version},
         $self->{dbf_updated_year},
@@ -170,13 +249,13 @@ sub read_dbf_header {
     # have a end-of-file marker in their dbf files, Aleksandar Jelenak
     # says the ESRI tools don't have a problem with this, so we shouldn't
     # either
-    my $last_byte = $self->get_bytes('dbf', $li-1, 1);
+    my $last_byte = $self->_get_bytes('dbf', $li-1, 1);
     $ls ++ if ord $last_byte == 0x1A;
 
     croak "dbf: file wrong size (should be $ls, but found $li)"
       if $ls != $li;
 
-    my $header = $self->get_bytes('dbf', 32, $self->{dbf_header_length} - 32);
+    my $header = $self->_get_bytes('dbf', 32, $self->{dbf_header_length} - 32);
     my $count = 0;
     $self->{dbf_header_info} = [];
 
@@ -226,10 +305,11 @@ sub read_dbf_header {
     return 1;
 }
 
-sub generate_dbf_header {
+#  needed now there is Geo::ShapeFile::Writer?
+sub _generate_dbf_header {
     my $self = shift;
 
-    #$self->{dbf_header} = $self->get_bytes('dbf',0,12);
+    #$self->{dbf_header} = $self->_get_bytes('dbf',0,12);
     (
         $self->{dbf_version},
         $self->{dbf_updated_year},
@@ -251,63 +331,6 @@ sub generate_dbf_header {
         0, # TODO - header_length,
         0, # TODO - record_length,
     ;
-
-#  SWL, 2014-02-09:  Unsure of the purpose of this commented code as yet
-#    my $ls = $self->{dbf_header_length} +
-#        ($self->{dbf_num_records}*$self->{dbf_record_length}) +
-#        1;
-#    my $li = -s $self->{filebase}.".dbf";
-#
-#    if($ls != $li) {
-#        croak "dbf: file wrong size (should be $ls, but found $li)";
-#    }
-#
-#    my $header = $self->get_bytes('dbf',32,$self->{dbf_header_length}-32);
-#    my $count = 0;
-#    $self->{dbf_header_info} = [];
-#
-#    while($header) {
-#        my $tmp = substr($header,0,32,'');
-#        my $chr = substr($tmp,0,1);
-#
-#        if(ord $chr == 0x0D) { last; }
-#        if(length($tmp) < 32) { last; }
-#
-#        my %tmp = ();
-#        (
-#            $tmp{name},
-#            $tmp{type},
-#            $tmp{size},
-#            $tmp{decimals}
-#        ) = unpack("Z11 Z x4 C2",$tmp);
-#
-#        $self->{dbf_field_info}->[$count] = {%tmp};
-#        
-#        $count++;
-#    }
-#    $self->{dbf_fields} = $count;
-#    if($count < 1) { croak "dbf: Not enough fields ($count < 1)"; }
-#
-#    my @template = ();
-#    foreach(@{$self->{dbf_field_info}}) {
-#        if($_->{size} < 1) {
-#            croak "dbf: Field $_->{name} too short ($_->{size} bytes)";
-#        }
-#        if($_->{size} > 4000) {
-#            croak "dbf: Field $_->{name} too long ($_->{size} bytes)";
-#        }
-#
-#        push(@template,"A".$_->{size});
-#    }
-#    $self->{dbf_record_template} = join(' ',@template);
-#
-#    my @field_names = ();
-#    foreach(@{$self->{dbf_field_info}}) {
-#        push(@field_names,$_->{name});
-#    }
-#    $self->{dbf_field_names} = [@field_names];
-#
-#    return 1;
 }
 
 sub get_dbf_record {
@@ -319,7 +342,7 @@ sub get_dbf_record {
     if (!$dbf) {
         $entry--; # make entry 0-indexed
 
-        my $record = $self->get_bytes(
+        my $record = $self->_get_bytes(
             'dbf',
             $self->{dbf_header_length}+($self->{dbf_record_length} * $entry),
             $self->{dbf_record_length}+1, # +1 for deleted flag
@@ -338,7 +361,8 @@ sub get_dbf_record {
     return wantarray ? %{$dbf} : $dbf;
 }
 
-sub set_dbf_record {
+#  needed?  not called anywhere
+sub _set_dbf_record {
     my $self   = shift;
     my $entry  = shift;
     my %record = @_;
@@ -346,26 +370,26 @@ sub set_dbf_record {
     $self->{_change_cache}->{dbf}->{$entry} = {%record};
 }
 
-sub get_shp_shx_header_value {
+sub _get_shp_shx_header_value {
     my $self = shift;
     my $val  = shift;
 
     if (!($self->{'shx_' . $val} || $self->{'shp_' . $val})) {
-        $self->read_shx_header();
+        $self->_read_shx_header();
     }
 
     return $self->{'shx_' . $val} || $self->{'shp_' . $val} || undef;
 }
 
 #  factory these
-sub x_min { shift()->get_shp_shx_header_value('x_min'); }
-sub x_max { shift()->get_shp_shx_header_value('x_max'); }
-sub y_min { shift()->get_shp_shx_header_value('y_min'); }
-sub y_max { shift()->get_shp_shx_header_value('y_max'); }
-sub z_min { shift()->get_shp_shx_header_value('z_min'); }
-sub z_max { shift()->get_shp_shx_header_value('z_max'); }
-sub m_min { shift()->get_shp_shx_header_value('m_min'); }
-sub m_max { shift()->get_shp_shx_header_value('m_max'); }
+sub x_min { shift()->_get_shp_shx_header_value('x_min'); }
+sub x_max { shift()->_get_shp_shx_header_value('x_max'); }
+sub y_min { shift()->_get_shp_shx_header_value('y_min'); }
+sub y_max { shift()->_get_shp_shx_header_value('y_max'); }
+sub z_min { shift()->_get_shp_shx_header_value('z_min'); }
+sub z_max { shift()->_get_shp_shx_header_value('z_max'); }
+sub m_min { shift()->_get_shp_shx_header_value('m_min'); }
+sub m_max { shift()->_get_shp_shx_header_value('m_max'); }
 
 sub upper_left_corner {
     my $self = shift;
@@ -424,11 +448,14 @@ sub area_contains_point {
 
     my ($x_min, $y_min, $x_max, $y_max) = @_;
 
+    my $x = $point->get_x;
+    my $y = $point->get_y;
+
     my $result =
-        ($point->X >= $x_min) &&
-        ($point->X <= $x_max) &&
-        ($point->Y >= $y_min) &&
-        ($point->Y <= $y_max);
+        ($x >= $x_min) &&
+        ($x <= $x_max) &&
+        ($y >= $y_min) &&
+        ($y <= $y_max);
 
     return $result;
 }
@@ -445,7 +472,7 @@ sub bounds_contains_point {
 }
 
 sub file_version {
-    shift()->get_shp_shx_header_value('file_version');
+    shift()->_get_shp_shx_header_value('file_version');
 }
 
 sub shape_type {
@@ -454,7 +481,7 @@ sub shape_type {
     return $self->{_change_cache}->{shape_type}
       if defined $self->{_change_cache}->{shape_type};
 
-    return $self->get_shp_shx_header_value('shape_type');
+    return $self->_get_shp_shx_header_value('shape_type');
 }
 
 sub shapes {
@@ -464,7 +491,7 @@ sub shapes {
       if defined $self->{_change_cache}->{records};
 
     if (!$self->{shx_file_length}) {
-        $self->read_shx_header();
+        $self->_read_shx_header();
     }
 
     my $filelength = $self->{shx_file_length};
@@ -512,9 +539,9 @@ sub get_shx_record {
     my $shx = $self->cache('shx', $entry);
 
     if (!$shx) {
-        my $record = $self->get_bytes('shx', (($entry - 1) * 8) + 100, 8);
+        my $record = $self->_get_bytes('shx', (($entry - 1) * 8) + 100, 8);
         $shx = [unpack 'N N', $record];
-        $self->cache('shx', $entry,$shx);
+        $self->cache('shx', $entry, $shx);
     }
 
     return @{$shx};
@@ -526,46 +553,57 @@ sub get_shp_record_header {
 
     my($offset) = $self->get_shx_record($entry);
 
-    my $record = $self->get_bytes('shp',$offset*2,8);
+    my $record = $self->_get_bytes('shp', $offset * 2, 8);
     my ($number, $content_length) = unpack 'N N', $record;
 
-    return ($number,$content_length);
+    return ($number, $content_length);
 }
 
-# TODO - cache this
+
+#  returns indexes, not objects - need to change that or add method for shape_objects_in_area
 sub shapes_in_area {
     my $self = shift;
-    my @area = @_; # x_min,y_min,x_max,y_max,
+    my @area = @_; # x_min, y_min, x_max, y_max,
+
+    if (my $sp_index = $self->get_spatial_index) {
+        my $shapes = [];
+        $sp_index->query_partly_within_rect (@area, $shapes);
+        my @indexes;
+        foreach my $shape (@$shapes) {
+            push @indexes, $shape->shape_id;
+        }
+        return wantarray ? @indexes : \@indexes;
+    }
 
     my @results = ();
     SHAPE:
-    for (1 .. $self->shapes) {
-        my($offset, $content_length) = $self->get_shx_record($_);
-        my $type = unpack 'V', $self->get_bytes('shp',$offset * 2 + 8, 4);
+    foreach my $shp_id (1 .. $self->shapes) {
+        my ($offset, $content_length) = $self->get_shx_record($shp_id);
+        my $type = unpack 'V', $self->_get_bytes ('shp', $offset * 2 + 8, 4);
 
         next SHAPE if $self->type($type) eq 'Null';
 
         if ($self->type($type) =~ /^Point/) {
-            my $bytes = $self->get_bytes('shp', $offset * 2 +12, 16);
+            my $bytes = $self->_get_bytes('shp', $offset * 2 + 12, 16);
             my ($x, $y) = (
-                $is_little_endian
+                $little_endian_sys
                     ? (unpack 'dd', $bytes )
                     : (reverse unpack 'dd', scalar reverse $bytes)
             );
             my $pt = Geo::ShapeFile::Point->new(X => $x, Y => $y);
-            if($self->area_contains_point($pt,@area)) {
-                push @results, $_;
+            if ($self->area_contains_point($pt, @area)) {
+                push @results, $shp_id;
             }
         }
         elsif ($self->type($type) =~ /^(PolyLine|Polygon|MultiPoint|MultiPatch)/) {
-            my $bytes = $self->get_bytes('shp',($offset*2)+12,32);
+            my $bytes = $self->_get_bytes('shp', ($offset * 2) + 12, 32);
             my @p = (
-                $is_little_endian
+                $little_endian_sys
                     ? (unpack 'd4', $bytes )
                     : (reverse unpack 'd4', scalar reverse $bytes )
             );
             if ($self->check_in_area(@p, @area)) {
-                push @results, $_;
+                push @results, $shp_id;
             }
         }
         else {
@@ -573,7 +611,7 @@ sub shapes_in_area {
         }
     }
 
-    return @results;
+    return wantarray ? @results : \@results;
 }
 
 sub check_in_area {
@@ -594,7 +632,7 @@ sub check_in_area {
 }
 
 #  SWL: not used anymore - remove?
-sub between {
+sub _between {
     my $self  = shift;
     my $check = shift;
 
@@ -615,14 +653,15 @@ sub bounds {
     );
 }
 
-sub extract_ints {
+# is this ever called?  
+sub _extract_ints {
     my $self = shift;
     my $end = shift;
     my @what = @_;
 
     my $template = ($end =~ /^l/i) ? 'V': 'N';
 
-    $self->extract_and_unpack(4, $template, @what);
+    $self->_extract_and_unpack(4, $template, @what);
     foreach (@what) {
         $self->{$_} = $self->{$_};
     }
@@ -632,11 +671,11 @@ sub get_shp_record {
     my $self  = shift;
     my $entry = shift;
 
-    my $shape = $self->cache('shp',$entry);
+    my $shape = $self->cache('shp', $entry);
     if (!$shape) {
-        my($offset,$content_length) = $self->get_shx_record($entry);
+        my($offset, $content_length) = $self->get_shx_record($entry);
 
-        my $record = $self->get_bytes('shp', $offset * 2, $content_length * 2 + 8);
+        my $record = $self->_get_bytes('shp', $offset * 2, $content_length * 2 + 8);
 
         $shape = Geo::ShapeFile::Shape->new();
         $shape->parse_shp($record);
@@ -647,18 +686,18 @@ sub get_shp_record {
 }
 
 sub shx_handle {
-    shift()->get_handle('shx');
+    shift()->_get_handle('shx');
 }
 
 sub shp_handle {
-    shift()->get_handle('shp');
+    shift()->_get_handle('shp');
 }
 
 sub dbf_handle {
-    shift()->get_handle('dbf');
+    shift()->_get_handle('dbf');
 }
 
-sub get_handle {
+sub _get_handle {
     my $self  = shift;
     my $which = shift;
 
@@ -675,7 +714,7 @@ sub get_handle {
     return $self->{$han};
 }
 
-sub get_bytes {
+sub _get_bytes {
     my $self   = shift;
     my $file   = shift;
     my $offset = shift;
@@ -844,7 +883,7 @@ in the shp file.  The corners are listed clockwise starting with the upper
 left.
 (upper_left_corner, upper_right_corner, lower_right_corner, lower_left_corner)
 
-=item area_contains_point($point,$x_min,$y_min,$x_max,$y_max)
+=item area_contains_point($point, $x_min, $y_min, $x_max, $y_max)
 
 Utility function that returns true if the Geo::ShapeFile::Point object in
 point falls within the bounds of the rectangle defined by the area
@@ -930,12 +969,37 @@ Returns the name of the type associated with the given type id number.
 =item find_bounds(@shapes)
 
 Takes an array of Geo::ShapeFile::Shape objects, and returns a hash, with
-keys of x_min,y_min,x_max,y_max, with the values for each of those bounds.
+keys of x_min, y_min, x_max, y_max, with the values for each of those bounds.
 
 =item get_dbf_field_names()
 
 Returns an array of the field names in the dbf file, in file order.
-Returns an array reference if used in scalar context.  
+Returns an array reference if used in scalar context.
+
+=item get_all_shapes()
+Returns an array (or arrayref in scalar context) with all shape objects in the
+shapefile.
+
+=item get_shapes_sorted()
+=item get_shapes_sorted(\@shapes, \@sort_sub)
+Returns an array (or arrayref in scalar context) of shape objects sorted by ID.
+Defaults to all shapes, but will also take an array of Geo::ShapeFile::Shape objects.
+Sorts by record number by default, but you can pass your own sub for more fancy work.
+
+=item get_shapes_sorted_spatially()
+=item get_shapes_sorted_spatially(\@shapes, \@sort_sub)
+Convenience wrapper around get_shapes_sorted to sort spatially (south-west to north-east)
+then by record number.  You can pass your own shapes and sort sub.
+The sort sub does not need to be spatial since it will sort by whatever you say,
+but it is your code so do what you like.
+
+
+=item build_spatial_index()
+Builds a spatial index (a L<Tree::R> object) and returns it.  This will be used internally for
+many of the routines, but you can use it directly if useful.
+
+=item get_spatial_index()
+Returns the spatial index object, or C<undef> if one has not been built.
 
 =back
 

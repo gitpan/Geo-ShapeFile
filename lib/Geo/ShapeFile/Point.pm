@@ -4,7 +4,7 @@ use strict;
 use warnings;
 use Math::Trig;
 use Carp;
-our $VERSION = '2.54';
+our $VERSION = '2.55_001';
 
 use overload
     '==' => 'eq',
@@ -33,11 +33,11 @@ sub new {
     return $self;
 }
 
-sub var {
+sub _var {
     my $self = shift;
-    my $var = shift;
+    my $var  = shift;
 
-    if(@_) {
+    if (@_) {
         return $self->{$var} = shift;
     }
     else {
@@ -46,19 +46,25 @@ sub var {
 }
 
 #  these could be factory generated
-sub X { shift()->var('X',@_); }
-sub Y { shift()->var('Y',@_); }
-sub Z { shift()->var('Z',@_); }
-sub M { shift()->var('M',@_); }
+sub X { shift()->_var('X', @_); }
+sub Y { shift()->_var('Y', @_); }
+sub Z { shift()->_var('Z', @_); }
+sub M { shift()->_var('M', @_); }
 
-sub x_min { shift()->var('X'); }
-sub x_max { shift()->var('X'); }
-sub y_min { shift()->var('Y'); }
-sub y_max { shift()->var('Y'); }
-sub z_min { shift()->var('Z'); }
-sub z_max { shift()->var('Z'); }
-sub m_min { shift()->var('M'); }
-sub m_max { shift()->var('M'); }
+sub x_min { $_[0]->_var('X'); }
+sub x_max { $_[0]->_var('X'); }
+sub y_min { $_[0]->_var('Y'); }
+sub y_max { $_[0]->_var('Y'); }
+sub z_min { $_[0]->_var('Z'); }
+sub z_max { $_[0]->_var('Z'); }
+sub m_min { $_[0]->_var('M'); }
+sub m_max { $_[0]->_var('M'); }
+
+sub get_x { $_[0]->{X} }
+sub get_y { $_[0]->{Y} }
+sub get_z { $_[0]->{Z} }
+sub get_m { $_[0]->{M} }
+
 
 sub import {
     my $self = shift;
@@ -96,7 +102,7 @@ sub stringify {
 }
 
 sub distance_from {
-    my ($p1,$p2) = @_;
+    my ($p1, $p2) = @_;
 
     my $dp = $p2->subtract($p1);
     return sqrt ( ($dp->X ** 2) + ($dp->Y **2) );
@@ -109,26 +115,25 @@ sub angle_to {
 
     my $dp = $p2->subtract ($p1);
 
-    #  could use atan2 here, surely?
-    if ($dp->Y) {
-        # two distinct points
-        return rad2deg ( atan( $dp->Y / $dp->X ) )
-          if $dp->X;
+    my $x_off = $dp->get_x;
+    my $y_off = $dp->get_y;
 
-        # same X value
-        return $dp->Y > 0 ? 90 : -90;
+    return 0 if !($x_off || $y_off);
+
+    my $bearing = 90 - Math::Trig::rad2deg (Math::Trig::atan2 ($y_off, $x_off));
+    if ($bearing < 0) {
+        $bearing += 360;
     }
 
-    # same point
-    return 0;
+    return $bearing;
 }
 
-sub add {      mathemagic('add',      @_); }
-sub subtract { mathemagic('subtract', @_); }
-sub multiply { mathemagic('multiply', @_); }
-sub divide {   mathemagic('divide',   @_); }
+sub add {      _mathemagic('add',      @_); }
+sub subtract { _mathemagic('subtract', @_); }
+sub multiply { _mathemagic('multiply', @_); }
+sub divide {   _mathemagic('divide',   @_); }
 
-sub mathemagic {
+sub _mathemagic {
     my ($op, $l, $r, $reverse) = @_;
 
     if ($reverse) {  # put them back in the right order
@@ -145,18 +150,18 @@ sub mathemagic {
     unless ($left)  { croak "Couldn't identify $l for $op"; }
     unless ($right) { croak "Couldn't identify $r for $op"; }
 
-    my $function = join '_', $op, $left, $right;
+    my $function = '_' . join '_', $op, $left, $right;
 
     croak "Don't know how to $op $left and $right"
       if !defined &{$function};
 
     do {
         no strict 'refs';
-        return $function->($l,$r);
+        return $function->($l, $r);
     }
 }
 
-sub add_point_point {
+sub _add_point_point {
     my ($p1, $p2) = @_;
 
     my $z;
@@ -169,7 +174,7 @@ sub add_point_point {
     );
 }
 
-sub add_point_number {
+sub _add_point_number {
     my ($p1, $n) = @_;
 
     my $z;
@@ -181,9 +186,9 @@ sub add_point_number {
         Z => $z,
     );
 }
-sub add_number_point { add_point_number(@_); }
+sub _add_number_point { add_point_number(@_); }
 
-sub subtract_point_point {
+sub _subtract_point_point {
     my($p1, $p2) = @_;
 
     my $z;
@@ -196,7 +201,8 @@ sub subtract_point_point {
     );
     return $result;
 }
-sub subtract_point_number {
+
+sub _subtract_point_number {
     my($p1, $n) = @_;
 
     my $z;
@@ -210,9 +216,9 @@ sub subtract_point_number {
         Z =>  $z,
     );
 }
-sub subtract_number_point { subtract_point_number(reverse @_); }
+sub _subtract_number_point { _subtract_point_number(reverse @_); }
 
-sub multiply_point_point {
+sub _multiply_point_point {
     my ($p1, $p2) = @_;
 
     my $z;
@@ -226,7 +232,7 @@ sub multiply_point_point {
         Z =>  $z,
     );
 }
-sub multiply_point_number {
+sub _multiply_point_number {
     my($p1, $n) = @_;
 
     my $z;
@@ -240,9 +246,10 @@ sub multiply_point_number {
         Z =>  $z,
     );
 }
-sub multiply_number_point { multiply_point_number(reverse @_); }
 
-sub divide_point_point {
+sub _multiply_number_point { _multiply_point_number(reverse @_); }
+
+sub _divide_point_point {
     my($p1, $p2) = @_;
 
     my $z;
@@ -256,7 +263,8 @@ sub divide_point_point {
         Z =>  $z,
     );
 }
-sub divide_point_number {
+
+sub _divide_point_number {
     my ($p1, $n) = @_;
 
     my $z;
@@ -270,7 +278,8 @@ sub divide_point_number {
         Z =>  $z,
     );
 }
-sub divide_number_point { divide_point_number(reverse @_); }
+
+sub _divide_number_point { divide_point_number(reverse @_); }
 
 1;
 __END__
@@ -331,6 +340,11 @@ and/or M values to be assigned to the point.
 =item X() Y() Z() M()
 
 Set/retrieve the X, Y, Z, or M values for this object.
+
+=item get_x() get_y() get_z() get_m()
+
+Get the X, Y, Z, or M values for this object.  Slightly faster than the
+dual purpose set/retrive methods so good for heavy usage parts of your code.  
 
 =item x_min() x_max() y_min() y_max()
 

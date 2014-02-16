@@ -15,6 +15,8 @@ pod2htmd.tmp$
 
 .*\.tar\.gz$
 
-pm_to_blib
-xt/.perlcritic-history
+\.sr\.lock
 
+x\.tmp
+
+pm_to_blib

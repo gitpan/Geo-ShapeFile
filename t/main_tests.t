@@ -5,11 +5,9 @@ use strict;
 use warnings;
 use rlib '../lib', './lib';
 
-BEGIN {
-    use_ok('Geo::ShapeFile');
-    use_ok('Geo::ShapeFile::Shape');
-    use_ok('Geo::ShapeFile::Point');
-};
+use Geo::ShapeFile;
+use Geo::ShapeFile::Shape;
+use Geo::ShapeFile::Point;
 
 #  should use $FindBin::bin for this
 my $dir = "t/test_data";
@@ -42,7 +40,10 @@ sub main {
     test_shapepoint();
     test_files();
     test_empty_dbf();
-    
+    test_points_in_polygon();
+    test_spatial_index();
+    test_angle_to();
+
     done_testing;
     return 0;
 }
@@ -89,15 +90,36 @@ sub test_shapepoint {
     
     
     return;
-
-    #  test some angles
-    foreach my $p1 (@pnt_objects[0..3]) {
-        foreach my $p2 (@pnt_objects[0..3]) {
-            my $angle = $p1->angle_to ($p2);
-            print "$p1 to $p2 is $angle\n";
-        }
-    }
     
+}
+
+sub test_angle_to {
+    my $p1 = Geo::ShapeFile::Point->new (X => 0, Y => 0);
+
+    my @checks = (
+        [ 0,  0,    0],
+        [ 1,  0,   90],
+        [ 1,  1,   45],
+        [ 0,  1,    0],
+        [-1,  1,  315],
+        [-1,  0,  270],
+        [-1, -1,  225],
+        [ 0, -1,  180],
+    );
+
+    foreach my $p2_data (@checks) {
+        my ($x, $y, $exp) = @$p2_data;
+        my $p2 = Geo::ShapeFile::Point->new (X => $x, Y => $y);
+        my $angle = $p1->angle_to ($p2);
+
+        is (
+            $angle,
+            $exp,
+            "Got expected angle of $exp for $x,$y",
+        );
+    }
+
+    return;
 }
 
 sub test_end_point_slope {
@@ -118,6 +140,8 @@ sub test_end_point_slope {
         $shape->has_point($start_pt),
         $shape->has_point($end_pt);
     print;
+
+    return;
 }
 
 
@@ -260,6 +284,8 @@ sub test_files {
         };
 
     }
+
+    return;
 }
 
 
@@ -275,6 +301,13 @@ sub test_shapes_in_area {
     my $shp = Geo::ShapeFile->new ("$dir/test_shapes_in_area");
 
     my @shapes_in_area = $shp->shapes_in_area (1, 1, 11, 11);
+    is_deeply (
+        [1],
+        \@shapes_in_area,
+        'Shape is in area'
+    );
+
+    @shapes_in_area = $shp->shapes_in_area (1, 1, 11, 9);
     is_deeply (
         [1],
         \@shapes_in_area,
@@ -360,4 +393,172 @@ sub test_corners {
     cmp_ok ($ll->Y, '<', $ul->Y, 'corners: ll is below ul');
     cmp_ok ($lr->Y, '<', $ur->Y, 'corners: lr is below ur');
 
+    return;
 }
+
+sub test_points_in_polygon {
+    my $shp;
+    my $filename;
+
+    #  multipart poly
+    $filename = 'states.shp';
+    $shp = Geo::ShapeFile->new ("$dir/$filename");
+
+    my @in_coords = (
+        [-112.386, 28.950],
+        [-112.341, 29.159],
+        [-112.036, 29.718],
+        [-110.186, 30.486],
+        [-114.845, 32.380],
+    );
+    my @out_coords = (
+        [-111.286, 27.395],
+        [-113.843, 30.140],
+        [-111.015, 31.767],
+        [-112.594, 34.300],
+        [-106.772, 28.420],
+        [-114.397, 24.802],
+    );
+
+    #  shape 23 is sonora
+    my $test_poly = $shp->get_shp_record(23);
+
+    foreach my $coord (@in_coords) {
+        my $point  = Geo::ShapeFile::Point->new(X => $coord->[0], Y => $coord->[1]);
+        my $result = $test_poly->contains_point ($point);
+        ok ($result, "$point is in $filename polygon 23");
+    }
+
+    foreach my $coord (@out_coords) {
+        my $point  = Geo::ShapeFile::Point->new(X => $coord->[0], Y => $coord->[1]);
+        my $result = $test_poly->contains_point ($point);
+        ok (!$result, "$point is not in $filename polygon 23");
+    }
+
+    #  use the spatial index
+    $test_poly->build_spatial_index;
+
+    foreach my $coord (@in_coords) {
+        my $point  = Geo::ShapeFile::Point->new(X => $coord->[0], Y => $coord->[1]);
+        my $result = $test_poly->contains_point ($point, 0);
+        ok ($result, "$point is in $filename polygon 23 (indexed)");
+    }
+
+    foreach my $coord (@out_coords) {
+        my $point  = Geo::ShapeFile::Point->new(X => $coord->[0], Y => $coord->[1]);
+        my $result = $test_poly->contains_point ($point);
+        ok (!$result, "$point is not in $filename polygon 23 (indexed)");
+    }
+
+    #  now try with a shapefile with holes in the polys
+    $filename = 'polygon.shp';
+    $shp = Geo::ShapeFile->new ("$dir/$filename");
+    #  shape 83 has holes
+    $test_poly = $shp->get_shp_record(83);
+
+    @in_coords = (
+        [477418, 4762016],
+        [476644, 4761530],
+        [477488, 4760789],
+        [477716, 4760055],
+    );
+    @out_coords = (
+        [477521, 4760247],  # hole
+        [477414, 4761150],  # hole
+        [477388, 4761419],  # hole
+        [477996, 4761648],  # hole
+        [476810, 4761766],  # outside but in bounds
+        [478214, 4760627],  # outside but in bounds
+        [477499, 4762436],  # outside bounds
+    );
+
+    foreach my $coord (@in_coords) {
+        my $point  = Geo::ShapeFile::Point->new(X => $coord->[0], Y => $coord->[1]);
+        my $result = $test_poly->contains_point ($point);
+        ok ($result, "$point is in $filename polygon 83");
+    }
+
+    foreach my $coord (@out_coords) {
+        my $point  = Geo::ShapeFile::Point->new(X => $coord->[0], Y => $coord->[1]);
+        my $result = $test_poly->contains_point ($point);
+        ok (!$result, "$point is not in $filename polygon 83");
+    }
+
+    #  Now with the spatial index.
+    $test_poly->build_spatial_index;
+
+    foreach my $coord (@in_coords) {
+        my $point  = Geo::ShapeFile::Point->new(X => $coord->[0], Y => $coord->[1]);
+        my $result = $test_poly->contains_point ($point, 0);
+        ok ($result, "$point is in $filename polygon 83 (indexed)");
+    }
+    foreach my $coord (@out_coords) {
+        my $point  = Geo::ShapeFile::Point->new(X => $coord->[0], Y => $coord->[1]);
+        my $result = $test_poly->contains_point ($point);
+        ok (!$result, "$point is not in $filename polygon 83 (indexed)");
+    }
+
+    return;
+}
+
+
+sub test_spatial_index {
+    #  polygon.shp has a variety of polygons
+    my $poly_file = "$dir/polygon";
+
+    my $shp_use_idx = Geo::ShapeFile->new ($poly_file);
+    my $shp_no_idx  = Geo::ShapeFile->new($poly_file);
+
+    my $sp_index = $shp_use_idx->build_spatial_index;
+
+    ok ($sp_index, 'got a spatial index');
+
+    my @bounds = $shp_use_idx->bounds;
+    my $objects = [];
+    $sp_index->query_completely_within_rect (@bounds, $objects);
+
+    my @shapes = $shp_use_idx->get_all_shapes;
+
+    is (
+        scalar @$objects,
+        scalar @shapes,
+        'index contains same number of objects as shapefile',
+    );
+
+    #  need to sort the arrays to compare them
+    my @sorted_shapes  = $shp_use_idx->get_shapes_sorted;
+    my @sorted_objects = $shp_use_idx->get_shapes_sorted ($objects);
+
+    is_deeply (
+        \@sorted_objects,
+        \@sorted_shapes,
+        'spatial_index contains all objects',
+    );
+
+    #  now get the mid-point for a lower-left bounds
+    my $mid_x =  ($bounds[0] + $bounds[2]) / 2;
+    my $mid_y =  ($bounds[1] + $bounds[3]) / 2;
+    my @bnd_ll = ($bounds[0], $bounds[1], $mid_x, $mid_y);
+
+    foreach my $expected ([\@bounds, 474], [\@bnd_ll, 130]) {
+        my $bnds = $expected->[0];
+        my $shape_count = $expected->[1];
+
+        my $shapes_in_area_no_idx  = $shp_no_idx->shapes_in_area (@$bnds);
+        my $shapes_in_area_use_idx = $shp_use_idx->shapes_in_area (@$bnds);
+    
+        my $message = 'shapes_in_area same with and without spatial index, bounds: '
+            . join ' ', @$bnds;
+
+        is (scalar @$shapes_in_area_no_idx,  $shape_count, 'got right number of shapes back, no index');
+        is (scalar @$shapes_in_area_use_idx, $shape_count, 'got right number of shapes back, use index');
+
+        is_deeply (
+            [sort @$shapes_in_area_no_idx],
+            [sort @$shapes_in_area_use_idx],
+            $message,
+        );
+    }       
+    
+}
+
