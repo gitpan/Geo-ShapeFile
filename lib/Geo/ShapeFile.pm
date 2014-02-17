@@ -10,7 +10,7 @@ use List::Util qw /min max/;
 use Tree::R;
 
 
-our $VERSION = '2.55_001';
+our $VERSION = '2.56';
 
 my $little_endian_sys = unpack 'b', (pack 'S', 1 );
 
@@ -977,17 +977,20 @@ Returns an array of the field names in the dbf file, in file order.
 Returns an array reference if used in scalar context.
 
 =item get_all_shapes()
+
 Returns an array (or arrayref in scalar context) with all shape objects in the
 shapefile.
 
 =item get_shapes_sorted()
 =item get_shapes_sorted(\@shapes, \@sort_sub)
+
 Returns an array (or arrayref in scalar context) of shape objects sorted by ID.
 Defaults to all shapes, but will also take an array of Geo::ShapeFile::Shape objects.
 Sorts by record number by default, but you can pass your own sub for more fancy work.
 
 =item get_shapes_sorted_spatially()
 =item get_shapes_sorted_spatially(\@shapes, \@sort_sub)
+
 Convenience wrapper around get_shapes_sorted to sort spatially (south-west to north-east)
 then by record number.  You can pass your own shapes and sort sub.
 The sort sub does not need to be spatial since it will sort by whatever you say,
