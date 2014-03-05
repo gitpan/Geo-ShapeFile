@@ -1,11 +1,12 @@
 package Geo::ShapeFile::Shape::Index;
+use 5.010;
 use strict;
 use warnings;
 use POSIX qw /floor/;
 use Carp;
 use autovivification;
 
-our $VERSION = '2.56';
+our $VERSION = '2.57_001';
 
 #  should also handle X cells
 sub new {
@@ -72,7 +73,10 @@ sub snap_to_index {
     my $y_min = $self->get_y_min;
     my $y_res = $self->get_y_res;
 
-    my $y_block = floor (($y - $y_min) / $y_res);
+    #  take the floor, but add a small tolerance to
+    #  avoid precision issues with snapping
+    my $partial = ($y - $y_min) / $y_res;
+    my $y_block = floor ($partial * 1.001);
 
     return wantarray ? (0, $y_block) : "0:$y_block";
 }
