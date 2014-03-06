@@ -16,4 +16,4 @@ no_index:
     - inc
 resources:
   repository: https://github.com/shawnlaffan/Geo-ShapeFile.git
-version: 2.57_001
+version: 2.58

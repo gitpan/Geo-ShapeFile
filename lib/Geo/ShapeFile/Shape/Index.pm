@@ -1,12 +1,12 @@
 package Geo::ShapeFile::Shape::Index;
-use 5.010;
+#use 5.010;  #  not yet
 use strict;
 use warnings;
 use POSIX qw /floor/;
 use Carp;
 use autovivification;
 
-our $VERSION = '2.57_001';
+our $VERSION = '2.58';
 
 #  should also handle X cells
 sub new {
