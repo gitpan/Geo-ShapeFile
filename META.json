@@ -19,7 +19,7 @@
          "inc"
       ]
    },
-   "release_status" : "testing",
+   "release_status" : "stable",
    "resources" : {
       "repository" : {
          "type" : "git",
@@ -27,5 +27,5 @@
          "web" : "https://github.com/shawnlaffan/Geo-ShapeFile"
       }
    },
-   "version" : "2.59_001"
+   "version" : "2.60"
 }
